@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "my-openai"
+version = "0.1.0"
+description = ""
+authors = ["Benjamin Bjoern Kroeger <benjamin_kroeger@t-online.de>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+openai = "^1.14.3"
+simpleaudio = "^1.0.4"
+pydub = "^0.25.1"
+pygame = "^2.5.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
