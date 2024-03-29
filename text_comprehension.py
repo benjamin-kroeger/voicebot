@@ -1,26 +1,33 @@
 import logging
 import os
 import asyncio
+import timeit
 from typing import Literal, Iterator
 from openai import OpenAI
 from io import BytesIO
 import simpleaudio as sa
-from concurrent.futures import ThreadPoolExecutor,as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 
-def call_gpt_stream(model: Literal['gpt-4', 'gpt-3.5-turbo-0125'], message: str = None) -> Iterator[str]:
-    stream = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "system", "content": message}, ],
-        stream=True,
-    )
+async def call_gpt_stream(model: Literal['gpt-4', 'gpt-3.5-turbo-0125'], message: str = None, queue: asyncio.Queue = None):
+    def stream_messages():
+        stream = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": message}, ],
+            stream=True,
+        )
 
-    for chunk in stream:
-        if chunk.choices[0].delta.content is not None:
-            yield chunk.choices[0].delta.content
+        for chunk in stream:
+            if chunk.choices[0].delta.content is not None:
+                queue.put_nowait(chunk.choices[0].delta.content)
+        queue.put_nowait(None)  # Signal end of stream
+
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        await loop.run_in_executor(executor, stream_messages)
 
 
 def create_speech_async(sentence: str):
@@ -40,25 +47,34 @@ def play_audio(file_name):
     play_obj.wait_done()
 
 
-def main():
+async def main():
+    loop = asyncio.get_running_loop()
     with ThreadPoolExecutor(max_workers=16) as executor:
-        futures = []
+        queue = asyncio.Queue()
+        logger.info('starting gpt readint')
+        # Start streaming GPT responses
+        gpt_task = loop.create_task(call_gpt_stream(model='gpt-3.5-turbo-0125', message="How do I brush my teeth, in one sentence", queue=queue))
+        logger.info('finished')
         full_response = ''
         sentence = ''
-        for word in call_gpt_stream(model='gpt-3.5-turbo-0125', message="How do I brush my teeth"):
+        while True:
+            word = await queue.get()
+            if word is None:
+                break
             logger.info(word)
             sentence += word
             full_response += word
             if word == '.':
-                futures.append(executor.submit(create_speech_async, sentence))
+                task = loop.run_in_executor(executor, create_speech_async, sentence)
+                audio_bytes = await task
+                play_audio(audio_bytes)
                 sentence = ''
 
         logger.info(full_response)
-        for audio in futures:
-            play_audio(audio.result())
+        await gpt_task  # Wait for GPT stream task to complete
 
 
 if __name__ == "__main__":
     # Configure logging
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',)
-    main()
+    asyncio.run(main())
