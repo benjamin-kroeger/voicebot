@@ -1,12 +1,13 @@
+import asyncio
 import logging
 import os
-import asyncio
-import timeit
-from typing import Literal, Iterator
-from openai import OpenAI
-from io import BytesIO
-import simpleaudio as sa
+import re
 from concurrent.futures import ThreadPoolExecutor
+from typing import Literal
+
+import openai
+import pyaudio
+from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
@@ -22,74 +23,53 @@ def call_gpt_stream(model: Literal['gpt-4', 'gpt-3.5-turbo-0125'], message: str 
     for chunk in stream:
         if chunk.choices[0].delta.content is not None:
             queue.put_nowait(chunk.choices[0].delta.content)
+            logger.info(f'GPT: {chunk.choices[0].delta.content}')
     queue.put_nowait(None)  # Signal end of stream
 
 
-def create_speech_async(sentence: str, queue: asyncio.Queue = None):
-    response = client.audio.speech.create(
-        model="tts-1",
-        voice="alloy",
-        input=sentence,
-        response_format='wav'
-    )
-    queue.put_nowait((sentence,BytesIO(response.content)))
-
-
-async def check_speech_queue(speech_queue: asyncio.Queue):
-    made_output = False
-    while True:
-        res = await speech_queue.get()
-        if res is None and made_output:
-            break
-        if res is None:
-            continue
-        sentence,audio = res
-        logger.info(f'Finished: {sentence}')
-        wave_obj = sa.WaveObject.from_wave_file(audio)
-        play_obj = wave_obj.play()
-        play_obj.wait_done()
-        made_output = True
-
-
-def play_audio(file_name):
-    logger.debug('Trying to play audio')
-    wave_obj = sa.WaveObject.from_wave_file(file_name)
-    play_obj = wave_obj.play()
-    play_obj.wait_done()
+def stream_response_to_speaker(sentence_input: str, player_stream) -> None:
+    logger.info(f"TTS: {sentence_input}")
+    with openai.audio.speech.with_streaming_response.create(
+            model="tts-1",
+            voice="alloy",
+            response_format="pcm",  # similar to WAV, but without a header chunk at the start.
+            input=sentence_input,
+    ) as response:
+        for chunk in response.iter_bytes(chunk_size=1024):
+            player_stream.write(chunk)
 
 
 async def main():
+    player_stream = pyaudio.PyAudio().open(format=pyaudio.paInt16, channels=1, rate=24000, output=True)
     loop = asyncio.get_running_loop()
     with ThreadPoolExecutor(max_workers=16) as executor:
         word_queue = asyncio.Queue()
         speech_queue = asyncio.Queue()
         # Start streaming GPT responses
 
-        # Start task to check speech queue
-        speech_task = asyncio.create_task(check_speech_queue(speech_queue))
-
         logger.info('Starting speech task')
         gpt_task = loop.run_in_executor(executor, call_gpt_stream, 'gpt-3.5-turbo-0125', "How do I brush my teeth", word_queue)
 
-
         full_response = ''
         sentence = ''
+        multiplier = 1
         while True:
             word = await word_queue.get()
-            if word is None:
-                break
-            logger.info(word)
-            sentence += word
-            full_response += word
-            if word == '.':
-                logger.info(f'Starting text2speech with {sentence}')
-                loop.run_in_executor(executor, create_speech_async, sentence, speech_queue)
+
+            if word == '.' and len(sentence) > 20 * multiplier and re.match(r'\w', sentence[-1]):
+                stream_response_to_speaker(sentence, player_stream)
+                multiplier += 2
                 sentence = ''
+
+            if word is None:
+                stream_response_to_speaker(sentence, player_stream)
+                break
+
+            sentence += word
 
         logger.info(full_response)
         await gpt_task  # Wait for GPT stream task to complete
         await speech_queue.put(None)  # Signal end of speech queue
-        await speech_task
 
 
 if __name__ == "__main__":
