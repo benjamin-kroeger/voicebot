@@ -42,14 +42,26 @@ def stream_response_to_speaker(sentence_input: str, player_stream) -> None:
             player_stream.write(chunk)
 
 
+def convert_speech_to_text(path_to_mp3: str):
+    audio_file = open(path_to_mp3, "rb")
+    transcription = client.audio.transcriptions.create(
+        model="whisper-1",
+        file=audio_file
+    )
+    return transcription.text
+
+
 async def main():
+    logger.info("Starting Speech to text")
+    query_text = convert_speech_to_text(r'/home/benjaminkroeger/PycharmProjects/my_openai/teeth.mp3')
+
     with AudioStreamWrapper() as player_stream:
         # player_stream = pyaudio.PyAudio().open(format=pyaudio.paInt16, channels=1, rate=24000, output=True)
         loop = asyncio.get_running_loop()
         with ThreadPoolExecutor(max_workers=16) as executor:
             word_queue = asyncio.Queue()
             logger.info('Starting speech task')
-            gpt_task = loop.run_in_executor(executor, call_gpt_stream, 'gpt-3.5-turbo-0125', "How do I brush my teeth", word_queue, loop)
+            gpt_task = loop.run_in_executor(executor, call_gpt_stream, 'gpt-3.5-turbo-0125', query_text, word_queue, loop)
 
             full_response = ''
             sentence = ''
