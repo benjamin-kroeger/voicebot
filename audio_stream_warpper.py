@@ -2,6 +2,10 @@ import pyaudio
 
 
 class AudioStreamWrapper:
+    """
+    Wrapper class for audio streams to ensure proper closure in all cases, so that a retry does not have to
+    deal with remnant of previous tries
+    """
 
     def __init__(self):
         self.p = pyaudio.PyAudio()
